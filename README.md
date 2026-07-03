@@ -1,36 +1,48 @@
-# 🎬 HBO Max Subtitle Downloader & Extractor (2026)
+# 🎬 Hbomax Subtitle Downloader & Extractor (2026)
 
-Hey everyone! 👋 I'm relatively new to the userscript community and wanted to contribute something useful. 
+> Free Tampermonkey userscript to download and extract subtitles (.srt / .vtt) from Hbomax. **Actively maintained and working in 2026** — rebuilt to keep up with Hbomax's latest player changes.
 
-I actually develop a full-fledged browser extension dedicated to downloading subtitles from streaming platforms. To give back to the community, I decided to extract the core code from my extension and turn it into this lightweight, free script for you to use on HBO Max (now simply known as Max).
-
-This script allows you to easily extract and download the raw subtitle file for the episode or movie you are currently watching.
+**Full version:** [subtiltee.com/subtitle-downloader](https://subtiltee.com/subtitle-downloader?utm_source=github&utm_medium=userscript&utm_campaign=hbomax) — batch download, SRT/VTT/ASS, dual subtitles & translation across all platforms.
 
 ---
 
-### ⚠️ IMPORTANT NOTICE: Want more power? 
-Streaming platforms update their UI and video players all the time, which often breaks standard userscripts. Also, heavy tasks like batch downloading or format conversion are hard to do in a basic script without freezing the webpage.
+### ⚠️ IMPORTANT: Script vs Extension
+**Userscripts are limited by nature.** Streaming platforms update their players weekly, which often breaks simple scripts. 
 
-If you want a **bulletproof solution** that requires zero setup and includes premium features, check out the original extension I built:
+For a stable, powerful and feature-rich experience, we highly recommend the **Subtiltee Extension**:
+- ✅ **Batch Download:** Download all languages and all seasons in one click.
+- ✅ **Auto-Conversion:** Automatically convert subtitles to SRT or ASS.
+- ✅ **Cinematic Mode:** Premium overlay for bilingual subtitles and better UX.
+- ✅ **Regular Updates:** Maintained daily to ensure it never breaks.
 
-🔥 **[GET THE FULL EXTENSION FOR CHROME](https://chromewebstore.google.com/detail/subtitle-downloader-for-y/flnhbocnpgofdjnmhogoanlilfmeneph?utm_source=github&utm_medium=userscript&utm_campaign=hbomax)**
-🔥 **[GET THE FULL EXTENSION FOR FIREFOX](https://addons.mozilla.org/en-US/firefox/addon/subtitles-streaming-dl?utm_source=github&utm_medium=userscript&utm_campaign=hbomax)**
-
-**Why use the Extension instead of the Script?**
-* ⚡ **1-Click Season Download:** Download subtitles for an entire season at once (no more clicking episode by episode!).
-* 🔄 **Auto .SRT Conversion:** Automatically converts raw web formats into clean, ready-to-use .SRT files.
-* 🛡️ **Auto-Updates:** It handles the platform's under-the-hood changes automatically. You'll never deal with a broken script again.
-* 🍿 **Multi-Platform:** Works seamlessly on HBO Max, Netflix, Disney+, and Prime Video.
+[**🚀 Get the Chrome Extension**](https://chromewebstore.google.com/detail/subtitle-downloader-for-y/flnhbocnpgofdjnmhogoanlilfmeneph?utm_source=github&utm_medium=userscript&utm_campaign=hbomax) | [**🦊 Get the Firefox Add-on**](https://addons.mozilla.org/en-US/firefox/addon/subtitles-streaming-dl?utm_source=github&utm_medium=userscript&utm_campaign=hbomax)
 
 ---
 
-## 🛠️ How to install the basic script
+### ⚡ Quick Installation (UX Magic)
 
-If you just need a quick, one-off download in the raw format, this userscript does the job perfectly.
+If you have Tampermonkey or Violentmonkey installed, just click the button below:
 
-1. Install a user script manager like [Tampermonkey](https://www.tampermonkey.net/) or [Violentmonkey](https://violentmonkey.github.io/).
-2. **👉 [CLICK HERE TO INSTALL THE SCRIPT](https://github.com/Subtiltee/subtitle-downloader/raw/main/scripts_tampermonkey/dist/github/hbomax-subtitle-downloader/hbomax-subtitle-downloader.user.js)**
-3. Open an HBO Max video, and look for the new Download button in the player controls.
+[**➔ Install Hbomax Subtitle Downloader**](https://raw.githubusercontent.com/Subtiltee/hbomax-subtitle-downloader/main/hbomax-subtitle-downloader.user.js)
 
-### Disclaimer
-*This script is provided as a free, basic proof-of-concept. Because it relies on the web player DOM, it may break if the site updates its interface. For a maintained, long-term solution, please use the [Browser Extension](https://chromewebstore.google.com/detail/subtitle-downloader-for-y/flnhbocnpgofdjnmhogoanlilfmeneph?utm_source=github&utm_medium=userscript&utm_campaign=hbomax).*
+*This will open the raw script file, and your userscript manager will automatically propose the installation.*
+
+---
+
+### 🛠️ Features (Free Script)
+- Extract current subtitle track directly from the Hbomax player.
+- Simple "Download" button added to the interface.
+- Lightweight and open-source.
+
+### 📖 How to use
+1. Install a userscript manager like [Tampermonkey](https://www.tampermonkey.net/).
+2. Click the [Installation Link](https://raw.githubusercontent.com/Subtiltee/hbomax-subtitle-downloader/main/hbomax-subtitle-downloader.user.js) above.
+3. Open Hbomax and start watching a video.
+4. Use the download button appearing in the player.
+
+---
+
+### 👑 Upgrade to Premium Experience
+Stop struggling with manual extraction. The **Subtiltee Suite** offers the most advanced subtitle tools for Hbomax, Disney+, HBO Max, and more.
+
+[**Visit Subtiltee.com**](https://subtiltee.com/subtitle-downloader?utm_source=github&utm_medium=userscript&utm_campaign=hbomax)
