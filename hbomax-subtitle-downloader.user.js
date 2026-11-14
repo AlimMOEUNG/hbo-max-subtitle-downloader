@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         Max Subtitle Downloader
 // @namespace    https://subtiltee.com
-// @version      2.4.5
+// @version      2.5.1
 // @description  Download Max (HBO Max) subtitles for the current video - Simple & Free. For batch download (all languages/seasons) and better UX, get the full extension!
 // @author       Subtiltee
+// @match        https://*.hbomax.com/*
 // @match        https://play.max.com/*
-// @match        https://play.hbomax.com/*
-// @icon         https://play.max.com/favicon.ico
+// @icon         https://www.hbomax.com/favicon.ico
 // @license      Proprietary
 // @grant        none
 // @inject-into  page
@@ -88,9 +88,30 @@
     return `${CONFIG.websiteUrl}?ref=${UTM_SOURCE}&utm_source=${UTM_SOURCE}&utm_medium=${UTM_MEDIUM}&utm_campaign=hbomax`
   }
 
+  // Extract { contentId, episodeId, videoId } from a page URL or a CMS API URL.
+  // Supported: /video/watch/{contentId}[/{episodeId}] and /cms/routes/video/watch/{contentId}[/{episodeId}]
+  // Episodes of a show can share the same contentId, so the cache key must include episodeId.
+  function extractVideoIds(url) {
+    if (!url || typeof url !== 'string') return null
+    const match = url.match(/\/(?:cms\/routes\/)?video\/watch\/([a-f0-9-]{36})(?:\/([a-f0-9-]{36}))?/)
+    if (!match) return null
+    const contentId = match[1]
+    const episodeId = match[2] || null
+    return { contentId, episodeId, videoId: episodeId ? `${contentId}+${episodeId}` : contentId }
+  }
+
   function getVideoId() {
-    const match = window.location.href.match(/\/video\/watch\/([^?/]+)/)
-    return match ? match[1] : null
+    return extractVideoIds(window.location.href)?.videoId || null
+  }
+
+  // Short ID used in the downloaded filename (episodeId when present, contentId otherwise)
+  function getFileId() {
+    const ids = extractVideoIds(window.location.href)
+    return ids ? ids.episodeId || ids.contentId : 'video'
+  }
+
+  function sanitizeFilename(name) {
+    return name.replace(/[\\/:*?"<>|]+/g, '').replace(/\s+/g, ' ').trim()
   }
 
   function getLocalizedLanguageName(isoCode) {
@@ -111,6 +132,15 @@
     videoId: null,
     tracks: {},
     lastMpdUrl: null,
+    // Every MPD URL already handled (hooked or recovered), so the late-injection rescue
+    // never re-reads a manifest that was already processed (e.g. the previous episode's).
+    seenMpdUrls: new Set(),
+    // performance.now() of the last navigation to a watch page: the rescue only trusts
+    // MPD requests started after it.
+    watchStartedAt: 0,
+    // Set as soon as the player asks for a manifest, to tell "waiting for the player"
+    // apart from "reading subtitles" in the status line.
+    manifestRequested: false,
     videoInfo: {
       title: null,
       season: null,
@@ -119,9 +149,17 @@
     },
   }
 
+  // The default Resource Timing buffer (~250 entries) fills up within seconds on HBO Max;
+  // once full the browser stops recording, which would blind the late-injection rescue.
+  try {
+    performance.setResourceTimingBufferSize(5000)
+  } catch (e) {}
+
   function clearState(newVideoId = null) {
     HBOState.videoId = newVideoId
     HBOState.videoInfo = { title: null, season: null, episode: null, isSerie: false }
+    HBOState.watchStartedAt = performance.now()
+    HBOState.manifestRequested = false
 
     const titleEl = document.getElementById('subtiltee-video-title')
     if (titleEl) {
@@ -129,12 +167,7 @@
       titleEl.style.display = 'none'
     }
 
-    const status = document.getElementById('subtiltee-status')
-    if (status) {
-      status.textContent = 'Scanning video...'
-      status.style.color = '#888'
-      status.style.background = 'rgba(255,255,255,0.05)'
-    }
+    refreshSubtitleUI(true)
   }
 
   function updateTitleDisplay() {
@@ -163,6 +196,11 @@
     return hours * 3600 + minutes * 60 + seconds
   }
 
+  // Keep only the main-content Periods of a multi-Period MPD (drops ads, recap pre-roll, post-roll).
+  // Each Period gets an (audio_count, text_count) signature; the signature carrying the most
+  // TOTAL seconds is the content. The old rule (most frequent signature among Periods >= 60s)
+  // broke ties by document order and could keep an 86s "previously on" pre-roll over a
+  // 57min episode, truncating the subtitles to the first ~86s.
   function filterContentPeriods(allPeriods) {
     if (allPeriods.length === 0) return []
     if (allPeriods.length === 1) {
@@ -172,35 +210,34 @@
       return [{ period, duration }]
     }
     const periodsData = []
-    const signatureCounts = new Map()
+    const signatureDurations = new Map()
     for (const period of allPeriods) {
       const durationAttr = period.getAttribute('duration')
       const duration = durationAttr ? parseDurationToSeconds(durationAttr) : 0
-      const audioLangs = new Set(
-        Array.from(period.querySelectorAll('AdaptationSet[contentType="audio"]')).map((as) =>
-          as.getAttribute('lang')
+      const langsOf = (type) =>
+        new Set(
+          Array.from(period.querySelectorAll(`AdaptationSet[contentType="${type}"]`))
+            .map((as) => as.getAttribute('lang'))
+            .filter(Boolean)
         )
-      )
-      const textLangs = new Set(
-        Array.from(period.querySelectorAll('AdaptationSet[contentType="text"]')).map((as) =>
-          as.getAttribute('lang')
-        )
-      )
-      const signature = `${audioLangs.size}a_${textLangs.size}t`
+      const signature = `${langsOf('audio').size}a_${langsOf('text').size}t`
       periodsData.push({ period, duration, signature })
-      if (duration >= 60) signatureCounts.set(signature, (signatureCounts.get(signature) || 0) + 1)
+      signatureDurations.set(signature, (signatureDurations.get(signature) || 0) + duration)
     }
     let mainContentSignature = null,
-      maxCount = 0
-    for (const [sig, count] of signatureCounts.entries()) {
-      if (count > maxCount) {
-        maxCount = count
+      maxDuration = 0
+    for (const [sig, total] of signatureDurations.entries()) {
+      if (total > maxDuration) {
+        maxDuration = total
         mainContentSignature = sig
       }
     }
     if (!mainContentSignature)
       return periodsData.map((p) => ({ period: p.period, duration: p.duration }))
-    return periodsData.filter((p) => p.signature === mainContentSignature && p.duration >= 60)
+    // No duration gate: it would drop legitimately short content Periods (NO_ADS layout)
+    const kept = periodsData.filter((p) => p.signature === mainContentSignature)
+    log(`Kept ${kept.length}/${periodsData.length} Period(s), content signature ${mainContentSignature}`)
+    return kept.map((p) => ({ period: p.period, duration: p.duration }))
   }
 
   function parseMpdContent(mpdContent, mpdUrl) {
@@ -208,9 +245,11 @@
       const parser = new DOMParser()
       const doc = parser.parseFromString(mpdContent, 'text/xml')
       const tracksByKey = new Map()
+      const urlSetsByKey = new Map() // key -> Set<string>, dedupes segments shared across Periods
       const fallbackBaseUrl = mpdUrl
         .split('?')[0]
         .substring(0, mpdUrl.split('?')[0].lastIndexOf('/') + 1)
+      if (doc.querySelector('parsererror')) return []
       const contentPeriods = filterContentPeriods(doc.querySelectorAll('Period'))
 
       for (const { period } of contentPeriods) {
@@ -221,7 +260,8 @@
         if (!periodBaseUrl.endsWith('/')) periodBaseUrl += '/'
 
         for (const adaptationSet of period.querySelectorAll('AdaptationSet[contentType="text"]')) {
-          const lang = (adaptationSet.getAttribute('lang') || 'unknown').toLowerCase()
+          const rawLang = adaptationSet.getAttribute('lang') || 'unknown'
+          const lang = rawLang.toLowerCase()
           const role = adaptationSet.querySelector('Role')?.getAttribute('value') || ''
           const source = role.includes('caption') ? 'CC' : role.includes('forced') ? 'FORCED' : ''
           const segmentTemplate = adaptationSet.querySelector('SegmentTemplate')
@@ -250,20 +290,26 @@
             if (!track) {
               track = {
                 language: lang,
-                label: getLocalizedLanguageName(lang) + (source ? ` [${source}]` : ''),
+                label: getLocalizedLanguageName(rawLang) + (source ? ` [${source}]` : ''),
                 segments: [],
                 source,
               }
               tracksByKey.set(key, track)
+              urlSetsByKey.set(key, new Set())
             }
-            urls.forEach((u) => {
-              if (!track.segments.includes(u)) track.segments.push({ url: u })
-            })
+            const urlSet = urlSetsByKey.get(key)
+            for (const u of urls) {
+              if (!urlSet.has(u)) {
+                urlSet.add(u)
+                track.segments.push({ url: u })
+              }
+            }
           }
         }
       }
       return Array.from(tracksByKey.values())
     } catch (e) {
+      logError('MPD parse failed', e)
       return []
     }
   }
@@ -271,17 +317,17 @@
   function processPlaybackData(data, url) {
     if (!data) return
     if (url.includes('/cms/routes/video/watch/')) {
-      const contentId = url.match(/\/watch\/([a-f0-9-]{36})/)?.[1]
+      const contentId = extractVideoIds(url)?.contentId
       const videoObj = data.included?.find((item) => item.type === 'video' && item.id === contentId)
       if (videoObj) {
         const attrs = videoObj.attributes,
-          isSerie = attrs.materialType === 'EPISODE'
-        let showTitle = attrs.name || ''
+          isSerie = (attrs.materialType || attrs.videoType) === 'EPISODE'
+        let showTitle = attrs.name || attrs.originalName || ''
         if (isSerie && videoObj.relationships?.show?.data?.id) {
           const showObj = data.included.find(
             (item) => item.type === 'show' && item.id === videoObj.relationships.show.data.id
           )
-          if (showObj) showTitle = showObj.attributes.name || showTitle
+          if (showObj) showTitle = showObj.attributes.name || showObj.attributes.originalName || showTitle
         }
         HBOState.videoInfo = {
           title: showTitle,
@@ -294,30 +340,92 @@
     }
   }
 
+  function isMpdUrl(url) {
+    return url.includes('.mpd') && !url.includes('fallback.mpd')
+  }
+
+  function isWatchedUrl(url) {
+    return typeof url === 'string' && (isMpdUrl(url) || url.includes('/cms/routes/video/watch/'))
+  }
+
+  // Shared handler for fetch + XHR responses
+  function handleResponse(url, text) {
+    if (!text) return
+    if (isMpdUrl(url)) {
+      HBOState.seenMpdUrls.add(url)
+      if (!text.includes('<MPD') || url === HBOState.lastMpdUrl) return
+      const videoId = getVideoId()
+      if (!videoId) return
+      const tracks = parseMpdContent(text, url)
+      // Never let an empty parse (ad / unrelated manifest) erase tracks already found
+      if (tracks.length === 0) return
+      HBOState.lastMpdUrl = url
+      HBOState.tracks[videoId] = tracks
+      log(`${tracks.length} subtitle track(s) found for ${videoId}`)
+      // Show the tracks right away instead of waiting for the next poll tick
+      refreshSubtitleUI()
+    } else {
+      try {
+        processPlaybackData(JSON.parse(text), url)
+      } catch (e) {}
+    }
+  }
+
+  // Called on every outgoing request: flags that the player started asking for its manifest,
+  // and records MPD URLs seen by the hooks so the rescue below never re-reads them.
+  function noteManifestRequest(url) {
+    if (typeof url !== 'string') return
+    const isMpd = isMpdUrl(url)
+    if (isMpd) HBOState.seenMpdUrls.add(url)
+    if ((isMpd || url.includes('/playback/v1/playbackInfo')) && !HBOState.manifestRequested) {
+      HBOState.manifestRequested = true
+      refreshSubtitleUI()
+    }
+  }
+
+  // Late-injection rescue: if the userscript manager injected the script after the player had
+  // already downloaded its manifest, the hooks never saw it and the widget would wait forever.
+  // The request is still listed in the Resource Timing buffer, and the manifest CDN answers
+  // `Access-Control-Allow-Origin: *`, so it can be re-read from the page without cookies.
+  async function rescueMissedManifest() {
+    if (!location.pathname.includes('/video/watch/') || getAvailableSubtitles().length > 0) return
+    let entries
+    try {
+      entries = performance
+        .getEntriesByType('resource')
+        .filter(
+          (e) =>
+            isMpdUrl(e.name) &&
+            e.startTime >= HBOState.watchStartedAt &&
+            !HBOState.seenMpdUrls.has(e.name)
+        )
+    } catch (e) {
+      return
+    }
+    if (entries.length === 0) return
+    const url = entries[entries.length - 1].name
+    HBOState.seenMpdUrls.add(url)
+    HBOState.manifestRequested = true
+    log('Manifest request missed (script injected late), re-reading it')
+    try {
+      const response = await originalFetch(url, { credentials: 'omit' })
+      if (response.ok) handleResponse(url, await response.text())
+    } catch (e) {
+      logError('Manifest rescue failed', e)
+    }
+  }
+
   const originalFetch = window.fetch
   window.fetch = async function (...args) {
-    const url = typeof args[0] === 'string' ? args[0] : args[0]?.url
+    const input = args[0]
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input?.url
+    noteManifestRequest(url)
     const response = await originalFetch.apply(this, args)
-    if (
-      typeof url === 'string' &&
-      (url.includes('.mpd') || url.includes('/cms/routes/video/watch/'))
-    ) {
-      const clonedResponse = response.clone()
-      clonedResponse
+    if (isWatchedUrl(url)) {
+      response
+        .clone()
         .text()
-        .then((text) => {
-          if (url.includes('.mpd')) {
-            if (text?.includes('<MPD') && url !== HBOState.lastMpdUrl) {
-              HBOState.lastMpdUrl = url
-              const videoId = getVideoId()
-              if (videoId) HBOState.tracks[videoId] = parseMpdContent(text, url)
-            }
-          } else {
-            try {
-              processPlaybackData(JSON.parse(text), url)
-            } catch (e) {}
-          }
-        })
+        .then((text) => handleResponse(url, text))
         .catch(() => {})
     }
     return response
@@ -326,25 +434,18 @@
   const originalXHROpen = XMLHttpRequest.prototype.open
   const originalXHRSend = XMLHttpRequest.prototype.send
   XMLHttpRequest.prototype.open = function (method, url) {
-    this._hboUrl = url
+    this._hboUrl = url instanceof URL ? url.href : url
     return originalXHROpen.apply(this, arguments)
   }
   XMLHttpRequest.prototype.send = function () {
     const url = this._hboUrl
-    if (url?.includes('.mpd') || url?.includes('/cms/routes/video/watch/')) {
+    noteManifestRequest(url)
+    if (isWatchedUrl(url)) {
       this.addEventListener('load', function () {
-        const text = this.responseText
-        if (url.includes('.mpd')) {
-          if (text?.includes('<MPD') && url !== HBOState.lastMpdUrl) {
-            HBOState.lastMpdUrl = url
-            const videoId = getVideoId()
-            if (videoId) HBOState.tracks[videoId] = parseMpdContent(text, url)
-          }
-        } else {
-          try {
-            processPlaybackData(JSON.parse(text), url)
-          } catch (e) {}
-        }
+        try {
+          // responseText throws for non-text responseType
+          handleResponse(url, this.responseText)
+        } catch (e) {}
       })
     }
     return originalXHRSend.apply(this, arguments)
@@ -353,10 +454,14 @@
   async function downloadSubtitle(track) {
     if (!track.segments || track.segments.length === 0) throw new Error('No segments found.')
     let mergedVtt = 'WEBVTT\n\n'
+    let okCount = 0
     for (const segment of track.segments) {
       try {
-        const response = await fetch(segment.url)
+        // The VTT segments are served by a CDN answering `Access-Control-Allow-Origin: *`,
+        // which rejects credentialed requests: always fetch them without cookies.
+        const response = await originalFetch(segment.url, { credentials: 'omit' })
         if (response.ok) {
+          okCount++
           let content = await response.text()
           mergedVtt +=
             content
@@ -365,10 +470,21 @@
               .replace(/^NOTE[^\n]*\n/gm, '')
               .trim() + '\n\n'
         }
-      } catch (e) {}
+      } catch (e) {
+        logError('Segment failed', segment.url, e)
+      }
     }
+    if (okCount === 0) throw new Error('No subtitle segment could be downloaded. Reload the page and try again.')
     mergedVtt = mergedVtt.replace(/\n{3,}/g, '\n\n').trim() + '\n'
-    downloadFile(mergedVtt, `Max_${getVideoId() || 'video'}_${track.language}.vtt`)
+    const info = HBOState.videoInfo
+    let baseName = `Max_${getFileId()}`
+    if (info.title) {
+      baseName = info.isSerie && info.season
+        ? `${info.title} S${String(info.season).padStart(2, '0')}E${String(info.episode).padStart(2, '0')}`
+        : info.title
+    }
+    const suffix = track.source ? `.${track.source.toLowerCase()}` : ''
+    downloadFile(mergedVtt, `${sanitizeFilename(baseName)}.${track.language}${suffix}.vtt`)
   }
 
   // ============================================================
@@ -409,7 +525,7 @@
                         <span style="font-size:32px;">📥</span>
                         <div style="font-size:22px;font-weight:800;letter-spacing:-0.5px;color:#fff;">Subtitle Downloader</div>
                     </div>
-                    <div id="subtiltee-status" style="display:inline-block;font-size:12px;font-weight:700;padding:6px 14px;background:rgba(255,255,255,0.05);border-radius:20px;color:#888;border:1px solid rgba(255,255,255,0.1);">Scanning video...</div>
+                    <div id="subtiltee-status" style="display:inline-block;font-size:12px;font-weight:700;padding:6px 14px;background:rgba(255,255,255,0.05);border-radius:20px;color:#888;border:1px solid rgba(255,255,255,0.1);">Waiting for the player...</div>
                 </div>
                 <div style="margin-bottom:24px; flex-grow: 1;">
                     <div id="subtiltee-video-title" style="font-size:14px;font-weight:700;color:${CONFIG.colors.primary};margin-bottom:16px;display:none;padding:12px;background:rgba(0,43,231,0.1);border-radius:10px;border:1px solid rgba(0,43,231,0.2);text-align:center;"></div>
@@ -460,7 +576,7 @@
         `
     document.body.appendChild(container)
     setupEventListeners(container)
-    startSubtitlePolling(container)
+    startSubtitlePolling()
     setupDragging(container)
     updateTitleDisplay()
   }
@@ -556,24 +672,43 @@
     }
   }
 
-  function startSubtitlePolling(container) {
-    const select = container.querySelector('#subtiltee-select'),
-      status = container.querySelector('#subtiltee-status')
-    let lastCount = -1
+  // Last rendered state of the widget. Keyed on video + phase + track count: keying on the
+  // count alone left the status stuck on "Scanning" whenever clearState() reset the text but
+  // the new video had the same number of tracks (same video after a URL tweak, cached video).
+  let lastRenderKey = null
+
+  function refreshSubtitleUI(force = false) {
+    const select = document.getElementById('subtiltee-select')
+    const status = document.getElementById('subtiltee-status')
+    if (!select || !status) return
+    const subs = getAvailableSubtitles()
+    const phase = subs.length > 0 ? 'ready' : HBOState.manifestRequested ? 'reading' : 'waiting'
+    const key = `${getVideoId()}|${phase}|${subs.length}`
+    if (!force && key === lastRenderKey) return
+    lastRenderKey = key
+    status.style.background = 'rgba(255,255,255,0.05)'
+    if (phase === 'ready') {
+      status.textContent = `✓ ${subs.length} subtitles detected`
+      status.style.color = '#4ade80'
+      select.innerHTML = subs.map((s, i) => `<option value="${i}">${s.label}</option>`).join('')
+    } else {
+      // The player only requests its manifest once it starts, which can take a while on HBO Max
+      status.textContent = phase === 'reading' ? 'Reading subtitles...' : 'Waiting for the player...'
+      status.style.color = '#888'
+      select.innerHTML = '<option disabled selected>Scanning...</option>'
+    }
+  }
+
+  let pollingStarted = false
+  function startSubtitlePolling() {
+    refreshSubtitleUI(true)
+    // A single interval for the whole page life: the widget can be removed and re-created on
+    // SPA navigation, and refreshSubtitleUI() always looks the current elements up by id.
+    if (pollingStarted) return
+    pollingStarted = true
     setInterval(() => {
-      const subs = getAvailableSubtitles()
-      if (subs.length !== lastCount) {
-        lastCount = subs.length
-        if (subs.length === 0) {
-          status.textContent = 'Scanning video...'
-          status.style.color = '#888'
-          select.innerHTML = '<option disabled selected>Scanning...</option>'
-        } else {
-          status.textContent = `✓ ${subs.length} subtitles detected`
-          status.style.color = '#4ade80'
-          select.innerHTML = subs.map((s, i) => `<option value="${i}">${s.label}</option>`).join('')
-        }
-      }
+      refreshSubtitleUI()
+      rescueMissedManifest()
     }, 1000)
   }
 
@@ -594,5 +729,6 @@
       } else if (document.getElementById('subtiltee-widget'))
         document.getElementById('subtiltee-widget').remove()
     }
-  }).observe(document.documentElement, { childList: true, subtree: true })
+  // `document` itself when <html> does not exist yet (possible at document-start)
+  }).observe(document.documentElement || document, { childList: true, subtree: true })
 })()
