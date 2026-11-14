@@ -23,7 +23,7 @@ For a stable, powerful and feature-rich experience, we highly recommend the **Su
 
 If you have Tampermonkey or Violentmonkey installed, just click the button below:
 
-[**➔ Install Hbomax Subtitle Downloader**](https://raw.githubusercontent.com/Subtiltee/hbomax-subtitle-downloader/main/hbomax-subtitle-downloader.user.js)
+[**➔ Install Hbomax Subtitle Downloader**](https://raw.githubusercontent.com/AlimMOEUNG/hbo-max-subtitle-downloader/main/hbomax-subtitle-downloader.user.js)
 
 *This will open the raw script file, and your userscript manager will automatically propose the installation.*
 
@@ -36,7 +36,7 @@ If you have Tampermonkey or Violentmonkey installed, just click the button below
 
 ### 📖 How to use
 1. Install a userscript manager like [Tampermonkey](https://www.tampermonkey.net/).
-2. Click the [Installation Link](https://raw.githubusercontent.com/Subtiltee/hbomax-subtitle-downloader/main/hbomax-subtitle-downloader.user.js) above.
+2. Click the [Installation Link](https://raw.githubusercontent.com/AlimMOEUNG/hbo-max-subtitle-downloader/main/hbomax-subtitle-downloader.user.js) above.
 3. Open Hbomax and start watching a video.
 4. Use the download button appearing in the player.
 
